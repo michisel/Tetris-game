@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="ja">
+<head>
+ <meta charset="utf-8" />
+ <meta name="viewport" content="width=device-width,initial-scale=1" />
+ <title>Simple Tetris</title>
+ <style>
+   body { display:flex; align-items:center; justify-content:center; height:100vh; margin:0; font-family:system-ui,Segoe UI,Roboto,"Hiragino Kaku Gothic ProN",Meiryo, sans-serif; background:#111; color:#eee }
+   .wrap { display:flex; gap:20px; align-items:flex-start }
+   canvas { background:#000; image-rendering:pixelated; border:6px solid #222; box-shadow:0 6px 30px rgba(0,0,0,.7) }
+   .ui { width:160px }
+   .ui h1 { font-size:18px; margin:0 0 10px }
+   .box { background:#0b0b0b; padding:12px; border-radius:6px; border:1px solid #222 }
+   .stat { margin:8px 0; font-size:14px }
+   .hint { margin-top:12px; font-size:12px; color:#bbb }
+   button { margin-top:8px; width:100%; padding:8px; border-radius:6px; border:none; background:#1e90ff; color:white; cursor:pointer }
+ </style>
+</head>
+<body>
+ <div class="wrap">
+   <canvas id="board" width="240" height="480"></canvas>
+   <div class="ui">
+     <div class="box">
+       <h1>Simple Tetris</h1>
+       <div class="stat">Score: <span id="score">0</span></div>
+       <div class="stat">Level: <span id="level">1</span></div>
+       <div class="stat">Lines: <span id="lines">0</span></div>
+       <canvas id="next" width="80" height="80" style="display:block; margin-top:6px; background:#000;"></canvas>
+       <button id="start">Start / Restart</button>
+       <div class="hint">
+         Controls:<br>
+         ← → : move<br>
+         ↓ : soft drop<br>
+         ↑ or Z: rotate<br>
+         Space or X: hard drop<br>
+         P: pause
+       </div>
+     </div>
+   </div>
+ </div>
+
+<script>
+(() => {
+ const COLS = 10, ROWS = 20, BLOCK = 24;
+ const canvas = document.getElementById('board');
+ const ctx = canvas.getContext('2d');
+ canvas.width = COLS * BLOCK; canvas.height = ROWS * BLOCK;
+ const nextCanvas = document.getElementById('next');
+ const nctx = nextCanvas.getContext('2d');
+
+ const S = [
+   [[0,1,1],[1,1,0],[0,0,0]],
+   [[0,1,0],[0,1,1],[0,0,1]],
+ ];
+ const Z = [
+   [[1,1,0],[0,1,1],[0,0,0]],
+   [[0,0,1],[0,1,1],[0,1,0]],
+ ];
+ const T = [
+   [[0,1,0],[1,1,1],[0,0,0]],
+   [[0,1,0],[0,1,1],[0,1,0]],
+   [[0,0,0],[1,1,1],[0,1,0]],
+   [[0,1,0],[1,1,0],[0,1,0]],
+ ];
+ const O = [
+   [[1,1],[1,1]],
+ ];
+ const I = [
+   [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+   [[0,0,1,0],[0,0,1,0],[0,0,1,0],[0,0,1,0]],
+ ];
+ const L = [
+   [[1,0,0],[1,1,1],[0,0,0]],
+   [[0,1,1],[0,1,0],[0,1,0]],
+   [[0,0,0],[1,1,1],[0,0,1]],
+   [[0,1,0],[0,1,0],[1,1,0]],
+ ];
+ const J = [
+   [[0,0,1],[1,1,1],[0,0,0]],
+   [[0,1,0],[0,1,0],[0,1,1]],
+   [[0,0,0],[1,1,1],[1,0,0]],
+   [[1,1,0],[0,1,0],[0,1,0]],
+ ];
+
+ const PIECES = [
+   {shape:I, color:'#00f0f0'},
+   {shape:O, color:'#f0f000'},
+   {shape:T, color:'#a000f0'},
+   {shape:S, color:'#00f000'},
+   {shape:Z, color:'#f00000'},
+   {shape:J, color:'#0000f0'},
+   {shape:L, color:'#f0a000'},
+ ];
+
+ function makeGrid(c, r){
+   const g = [];
+   for(let y=0;y<r;y++){ g[y] = new Array(c).fill(0); }
+   return g;
+ }
+
+ let grid = makeGrid(COLS, ROWS);
+
+ function drawCell(x,y,color,ctxRef=ctx){
+   ctxRef.fillStyle = color || '#222';
+   ctxRef.fillRect(x*BLOCK, y*BLOCK, BLOCK-1, BLOCK-1);
+ }
+
+ function drawGrid(){
+   ctx.clearRect(0,0,canvas.width,canvas.height);
+   for(let y=0;y<ROWS;y++){
+     for(let x=0;x<COLS;x++){
+       if(grid[y][x]) drawCell(x,y,grid[y][x]);
+       else drawCell(x,y,'#000');
+     }
+   }
+ }
+
+ function rotate(matrix){
+   const N = matrix.length;
+   const res = Array.from({length:N},()=>Array(N).fill(0));
+   for(let y=0;y<N;y++) for(let x=0;x<N;x++) res[x][N-1-y] = matrix[y][x];
+   return res;
+ }
+
+ function clone(o){ return JSON.parse(JSON.stringify(o)); }
+
+ function randomPiece(){
+   const p = PIECES[Math.floor(Math.random()*PIECES.length)];
+   return {
+     shape: p.shape[0], // start with base rotation
+     rotations: p.shape,
+     color: p.color,
+     x: Math.floor((COLS - p.shape[0][0].length)/2),
+     y: -1
+   };
+ }
+
+ let cur = randomPiece();
+ let next = randomPiece();
+
+ function collide(matrix, xOff, yOff){
+   for(let y=0;y<matrix.length;y++){
+     for(let x=0;x<matrix[y].length;x++){
+       if(matrix[y][x]){
+         const nx = x + xOff;
+         const ny = y + yOff;
+         if(nx<0||nx>=COLS||ny>=ROWS) return true;
+         if(ny>=0 && grid[ny][nx]) return true;
+       }
+     }
+   }
+   return false;
+ }
+
+ function merge(matrix,xOff,yOff,color){
+   for(let y=0;y<matrix.length;y++) for(let x=0;x<matrix[y].length;x++){
+     if(matrix[y][x]){
+       const ny = y+yOff; const nx = x+xOff;
+       if(ny>=0 && ny<ROWS && nx>=0 && nx<COLS) grid[ny][nx] = color;
+     }
+   }
+ }
+
+ function clearLines(){
+   let lines = 0;
+   outer: for(let y=ROWS-1;y>=0;y--){
+     for(let x=0;x<COLS;x++) if(!grid[y][x]) continue outer;
+     // line full
+     grid.splice(y,1);
+     grid.unshift(new Array(COLS).fill(0));
+     lines++;
+     y++; // recheck same row index after splicing
+   }
+   return lines;
+ }
+
+ function drawPiece(piece, ctxRef=ctx, offsetX=0, offsetY=0){
+   const mat = piece.shape;
+   for(let y=0;y<mat.length;y++){
+     for(let x=0;x<mat[y].length;x++){
+       if(mat[y][x]){
+         const drawX = piece.x + x + offsetX;
+         const drawY = piece.y + y + offsetY;
+         if(drawY>=0) drawCell(drawX, drawY, piece.color, ctxRef);
+       }
+     }
+   }
+ }
+
+ function drawNext(){
+   nctx.clearRect(0,0,nextCanvas.width,nextCanvas.height);
+   const scale = 16;
+   const offsetX = 1, offsetY = 1;
+   const tempBlock = 16;
+   // draw small cells
+   const mat = next.shape;
+   for(let y=0;y<mat.length;y++){
+     for(let x=0;x<mat[y].length;x++){
+       if(mat[y][x]){
+         nctx.fillStyle = next.color;
+         nctx.fillRect((x+offsetX)*tempBlock, (y+offsetY)*tempBlock, tempBlock-2, tempBlock-2);
+       }
+     }
+   }
+ }
+
+ let score = 0, level = 1, totalLines = 0;
+ let dropInterval = 800; // ms
+ let lastTime = 0; let dropCounter = 0;
+ let paused = false, gameOver = false;
+
+ function updateScore(addLines){
+   if(addLines>0){
+     const points = [0,40,100,300,1200];
+     score += (points[addLines] || 0) * level;
+     totalLines += addLines;
+     level = Math.floor(totalLines/10)+1;
+     dropInterval = Math.max(100, 800 - (level-1)*60);
+   }
+   document.getElementById('score').textContent = score;
+   document.getElementById('level').textContent = level;
+   document.getElementById('lines').textContent = totalLines;
+ }
+
+ function spawn(){
+   cur = next;
+   next = randomPiece();
+   cur.x = Math.floor((COLS - cur.shape[0].length)/2);
+   cur.y = -1;
+   drawNext();
+   if(collide(cur.shape, cur.x, cur.y)){
+     gameOver = true;
+   }
+ }
+
+ function hardDrop(){
+   while(!collide(cur.shape, cur.x, cur.y+1)) cur.y++;
+   lockPiece();
+ }
+
+ function lockPiece(){
+   merge(cur.shape, cur.x, cur.y, cur.color);
+   const cleared = clearLines();
+   updateScore(cleared);
+   spawn();
+ }
+
+ function playerMove(dir){
+   if(!collide(cur.shape, cur.x+dir, cur.y)) cur.x += dir;
+ }
+
+ function playerRotate(){
+   const oldShape = cur.shape;
+   // build rotation by finding next in rotations list if available
+   const rotations = cur.rotations;
+   let idx = rotations.findIndex(r => JSON.stringify(r) === JSON.stringify(oldShape));
+   if(idx === -1) idx = 0;
+   const nextIdx = (idx + 1) % rotations.length;
+   const candidate = rotations[nextIdx];
+   // wall kicks simple: try shifts
+   const kicks = [0, -1, 1, -2, 2];
+   for(const k of kicks){
+     if(!collide(candidate, cur.x + k, cur.y)){
+       cur.shape = candidate;
+       cur.x += k;
+       return;
+     }
+   }
+ }
+
+ function update(time=0){
+   if(gameOver) return drawGameOver();
+   if(paused){ draw(); return; }
+   const delta = time - lastTime;
+   lastTime = time;
+   dropCounter += delta;
+   if(dropCounter > dropInterval){
+     dropCounter = 0;
+     if(!collide(cur.shape, cur.x, cur.y+1)) cur.y++;
+     else lockPiece();
+   }
+   draw();
+   requestAnimationFrame(update);
+ }
+
+ function draw(){
+   drawGrid();
+   drawPiece(cur);
+ }
+
+ function drawGameOver(){
+   // draw final grid and overlay
+   drawGrid();
+   ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+   ctx.fillStyle = '#fff'; ctx.font = '20px sans-serif'; ctx.textAlign='center';
+   ctx.fillText('Game Over', canvas.width/2, canvas.height/2 - 10);
+   ctx.font = '14px sans-serif';
+   ctx.fillText('Press Start to play again', canvas.width/2, canvas.height/2 + 16);
+ }
+
+ document.addEventListener('keydown', e => {
+   if(gameOver) return;
+   if(e.key === 'ArrowLeft') { playerMove(-1); lastTime = performance.now(); }
+   else if(e.key === 'ArrowRight') { playerMove(1); lastTime = performance.now(); }
+   else if(e.key === 'ArrowDown') { if(!collide(cur.shape, cur.x, cur.y+1)) cur.y++; lastTime = performance.now(); }
+   else if(e.key === ' ' || e.key === 'x' || e.key === 'X') { e.preventDefault(); hardDrop(); }
+   else if(e.key === 'ArrowUp' || e.key === 'z' || e.key === 'Z') { playerRotate(); }
+   else if(e.key === 'p' || e.key === 'P'){ paused = !paused; }
+ });
+
+ document.getElementById('start').addEventListener('click', () => {
+   grid = makeGrid(COLS, ROWS);
+   score = 0; level = 1; totalLines = 0; dropInterval = 800; paused = false; gameOver = false;
+   next = randomPiece(); spawn(); updateScore(0);
+   lastTime = performance.now(); dropCounter = 0;
+   requestAnimationFrame(update);
+ });
+
+ // initial draw
+ ctx.fillStyle = '#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+ nctx.fillStyle = '#000'; nctx.fillRect(0,0,nextCanvas.width,nextCanvas.height);
+ // seed next
+ next = randomPiece(); drawNext();
+
+})();
+</script>
+</body>
+</html>
